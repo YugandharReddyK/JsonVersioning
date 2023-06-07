@@ -1,0 +1,10 @@
+{
+  "profiles": {
+    "JsonVersioning": {
+      "commandName": "Project"
+    },
+    "Docker": {
+      "commandName": "Docker"
+    }
+  }
+}
