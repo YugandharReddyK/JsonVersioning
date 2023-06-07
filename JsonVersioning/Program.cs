@@ -1,32 +1,65 @@
 ﻿using Microsoft.Data.SqlClient;
+using ModelsGeneration.Models;
+using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 
 class Program
 {
+    static List<string> IgnoreProperties = new List<string> { "$id", "$ref", "RunsFilters", "SolutionTypes", "RigStaleNotification", "LastSurveyDepth", "SinceLastSurveyTime", "ProcessingStatus", "NewSurveysCount" };
+
+
+
     static void Main()
     {
         string json1 = File.ReadAllText("C:\\Temp\\JsonVersioning\\JsonVersioning\\Well.json");
-        string json2 = File.ReadAllText("C:\\Temp\\JsonVersioning\\JsonVersioning\\Well3Delete.json");
+        string json2 = File.ReadAllText("C:\\Temp\\JsonVersioning\\JsonVersioning\\Well2.json");
 
+        var start = DateTime.Now;
         JObject obj1 = JObject.Parse(json1);
         JObject obj2 = JObject.Parse(json2);
 
         List<ChangeInfo> changes = GetJsonChanges(obj1, obj2);
+        double difference = (DateTime.Now - start).TotalMilliseconds;
 
-        foreach (var change in changes)
-        {
-            Console.WriteLine(change.ToString());
-        }
+        List<string> updateQueries = GetSQLUpdateQueries(changes.Where(a => a.ChangeType == ChangeType.Update).ToList());
 
         Console.ReadLine();
+    }
+
+    private static List<string> GetSQLUpdateQueries(List<ChangeInfo> changeInfos)
+    {
+        List<string> queries = new List<string>();
+        Dictionary<string, List<ChangeInfo>> tableBasedChangeInfos = new Dictionary<string, List<ChangeInfo>>();
+        foreach(ChangeInfo changeInfo in changeInfos)
+        {
+            string[] pathSplit = changeInfo.Path.Split('.');
+            string tableName = "Well";
+            if (pathSplit.Length > 1)
+            {
+                tableName = pathSplit[pathSplit.Length - 2];
+            }
+            tableName += $"|{changeInfo.Id}";
+
+            if (tableBasedChangeInfos.ContainsKey(tableName))
+            {
+                tableBasedChangeInfos[tableName].Add(changeInfo);
+            }
+            else
+            {
+                tableBasedChangeInfos.Add(tableName, new List<ChangeInfo> { changeInfo });
+            }
+        }
+        foreach(KeyValuePair<string, List<ChangeInfo>> table in tableBasedChangeInfos)
+        {
+            queries.Add($@"UPDATE {table.Key.Split('|')[0]} SET {string.Join(", ", table.Value.Select(v => $"{v.Path.Split('.').Last()} = '{v.NewValue}'"))} WHERE Id = '{table.Key.Split('|')[1]}';");
+        }
+        return queries;
     }
 
     static List<ChangeInfo> GetJsonChanges(JObject obj1, JObject obj2)
     {
         List<ChangeInfo> changes = new List<ChangeInfo>();
-
         CompareJsonObjects(obj1, obj2, "", changes);
-
         return changes;
     }
 
@@ -35,7 +68,7 @@ class Program
         foreach (var property in obj2.Properties())
         {
             string propertyName = property.Name;
-            if (propertyName != "$id" && propertyName != "$ref")
+            if (!IgnoreProperties.Contains(propertyName))
             {
                 string propertyPath = string.IsNullOrEmpty(currentPath) ? propertyName : currentPath + "." + propertyName;
 
@@ -49,19 +82,19 @@ class Program
                         {
                             CompareJsonObjects((JObject)value1, (JObject)value2, propertyPath, changes);
                         }
-                        else if(value2.Type == JTokenType.Array && value1.Type == JTokenType.Array && propertyName != "RunsFilters")
+                        else if(value2.Type == JTokenType.Array && value1.Type == JTokenType.Array)
                         {
                             CompareJsonArrays((JArray)value1, (JArray)value2, propertyPath, changes);
                         }
                         else
                         {
-                            changes.Add(new ChangeInfo(propertyPath, ChangeType.Update, value1.ToString(), value2.ToString()));
+                            changes.Add(new ChangeInfo(propertyPath, ChangeType.Update, value1.ToString(), value2.ToString(), new Guid(obj2.Value<string>("Id"))));
                         }
                     }
                 }
                 else
                 {
-                    changes.Add(new ChangeInfo(propertyPath, ChangeType.Add, "", property.Value.ToString()));
+                    changes.Add(new ChangeInfo(propertyPath, ChangeType.Add, "", property.Value.ToString(), new Guid(property.Value.Value<string>("Id"))));
                 }
             }
         }
@@ -73,7 +106,7 @@ class Program
 
             if (!obj2.TryGetValue(propertyName, out _))
             {
-                changes.Add(new ChangeInfo(propertyPath, ChangeType.Delete, property.Value.ToString(), ""));
+                changes.Add(new ChangeInfo(propertyPath, ChangeType.Delete, property.Value.ToString(), "", new Guid(property.Value.Value<string>("Id"))));
             }
         }
     }
@@ -92,15 +125,15 @@ class Program
 
             if (item1.Type == JTokenType.Object && item2.Type == JTokenType.Object)
             {
-                CompareJsonObjects((JObject)item1, (JObject)item2, currentPath + "[" + i + "]", changes);
+                CompareJsonObjects((JObject)item1, (JObject)item2, currentPath, changes);
             }
             else if (item1.Type == JTokenType.Array && item2.Type == JTokenType.Array)
             {
-                CompareJsonArrays((JArray)item1, (JArray)item2, currentPath + "[" + i + "]", changes);
+                CompareJsonArrays((JArray)item1, (JArray)item2, currentPath, changes);
             }
             else if (!JToken.DeepEquals(item1, item2))
             {
-                changes.Add(new ChangeInfo(currentPath + "[" + i + "]", ChangeType.Update, item1.ToString(), item2.ToString()));
+                changes.Add(new ChangeInfo(currentPath, ChangeType.Update, item1.ToString(), item2.ToString(), new Guid(item2.Value<string>("Id"))));
             }
         }
 
@@ -108,41 +141,16 @@ class Program
         {
             for (int i = minLength; i < count1; i++)
             {
-                changes.Add(new ChangeInfo(currentPath + "[" + i + "]", ChangeType.Delete, arr1[i].ToString(), ""));
+                changes.Add(new ChangeInfo(currentPath, ChangeType.Delete, arr1[i].ToString(), "", new Guid(arr1[i].Value<string>("Id"))));
             }
         }
         else if (count2 > count1)
         {
             for (int i = minLength; i < count2; i++)
             {
-                changes.Add(new ChangeInfo(currentPath + "[" + i + "]", ChangeType.Add, "", arr2[i].ToString()));
+                changes.Add(new ChangeInfo(currentPath, ChangeType.Add, "", arr2[i].ToString(), new Guid(arr2[i].Value<string>("Id"))));
             }
         }
-    }
-
-    static void UpdateChangeTypeInDatabase(List<ChangeInfo> changes)
-    {
-        string connectionString = "YourConnectionString";
-        string updateQuery = "UPDATE YourTable SET ChangeType = @ChangeType WHERE Path = @Path";
-
-        using (SqlConnection connection = new SqlConnection(connectionString))
-        {
-            connection.Open();
-
-            using (SqlCommand command = new SqlCommand(updateQuery, connection))
-            {
-                foreach (ChangeInfo change in changes)
-                {
-                    command.Parameters.Clear();
-                    command.Parameters.AddWithValue("@ChangeType", change.ChangeType.ToString());
-                    command.Parameters.AddWithValue("@Path", change.Path);
-
-                    command.ExecuteNonQuery();
-                }
-            }
-        }
-
-        Console.WriteLine("ChangeType updated in the database.");
     }
 }
 
@@ -159,13 +167,15 @@ class ChangeInfo
     public ChangeType ChangeType { get; set; }
     public string OldValue { get; set; }
     public string NewValue { get; set; }
+    public Guid Id { get; set; }
 
-    public ChangeInfo(string path, ChangeType changeType, string oldValue, string newValue)
+    public ChangeInfo(string path, ChangeType changeType, string oldValue, string newValue, Guid id)
     {
         Path = path;
         ChangeType = changeType;
         OldValue = oldValue;
         NewValue = newValue;
+        Id = id;
     }
 
     public override string ToString()
