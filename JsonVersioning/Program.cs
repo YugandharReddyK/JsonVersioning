@@ -1,8 +1,4 @@
-﻿using System;
-using System.Collections.Generic;
-using System.IO;
-using Microsoft.Data.SqlClient;
-using Newtonsoft.Json;
+﻿using Microsoft.Data.SqlClient;
 using Newtonsoft.Json.Linq;
 
 class Program
